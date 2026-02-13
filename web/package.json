@@ -1,5 +1,5 @@
 {
-  "name": "smartfund-(智投基金)",
+  "name": "smartfund",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -12,7 +12,6 @@
     "react-dom": "^19.2.4",
     "lucide-react": "^0.563.0",
     "recharts": "^3.7.0",
-    "@google/genai": "^1.39.0",
     "react": "^19.2.4"
   },
   "devDependencies": {

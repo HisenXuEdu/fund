@@ -11,7 +11,9 @@ import (
 
 func main() {
 	// 配置
+	host := "0.0.0.0" // 监听所有接口
 	port := 8080
+	serverIP := "175.27.141.110"
 
 	// 初始化服务层
 	fundService := service.NewFundService()
@@ -29,16 +31,20 @@ func main() {
 	mux := router.SetupRoutes(fundHandler)
 
 	// 启动服务器
+	addr := fmt.Sprintf("%s:%d", host, port)
 	log.Printf("🚀 服务器启动成功")
-	log.Printf("📍 监听端口: %d", port)
-	log.Printf("📡 基金详情: http://localhost:%d/api/fund/detail?code=001186", port)
-	log.Printf("📈 走势数据: http://localhost:%d/api/fund/trend?code=001186&period=month", port)
-	log.Printf("📊 日内数据: http://localhost:%d/api/fund/intraday?code=001186", port)
-	log.Printf("📋 基金列表: http://localhost:%d/api/fund/list", port)
-	log.Printf("🔧 服务状态: http://localhost:%d/api/status", port)
-	log.Printf("❤️  健康检查: http://localhost:%d/health", port)
+	log.Printf("📍 监听地址: %s", addr)
+	log.Printf("🌐 外网访问: http://%s:%d", serverIP, port)
+	log.Printf("")
+	log.Printf("API 端点:")
+	log.Printf("📡 基金详情: http://%s:%d/api/fund/detail?code=001186", serverIP, port)
+	log.Printf("📈 走势数据: http://%s:%d/api/fund/trend?code=001186&period=month", serverIP, port)
+	log.Printf("📊 日内数据: http://%s:%d/api/fund/intraday?code=001186", serverIP, port)
+	log.Printf("📋 基金列表: http://%s:%d/api/fund/list", serverIP, port)
+	log.Printf("🔧 服务状态: http://%s:%d/api/status", serverIP, port)
+	log.Printf("❤️  健康检查: http://%s:%d/health", serverIP, port)
 
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), mux); err != nil {
+	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("❌ 服务器启动失败: %v", err)
 	}
 }

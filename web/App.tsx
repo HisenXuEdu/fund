@@ -1,10 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { FundData, ChartDataPoint, FundBasic, TimeRange, AIAnalysisResult } from './types';
+import { FundData, ChartDataPoint, FundBasic, TimeRange } from './types';
 import { fetchFundDetails, fetchFundChartData, getSavedFundCodes, saveFundCodes, searchFunds } from './services/fundService';
-import { analyzeFundTrend } from './services/geminiService';
 import FundChart from './components/FundChart';
 import FundCard from './components/FundCard';
-import AIAnalysis from './components/AIAnalysis';
 import { Search, Plus, PieChart, AlertCircle, Clock, ArrowLeft, RefreshCw } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -14,10 +12,6 @@ const App: React.FC = () => {
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [loadingChart, setLoadingChart] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
-  
-  // AI Analysis State
-  const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResult | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   
   // Time Travel State
   const [simulatedTime, setSimulatedTime] = useState<string>('15:00');
@@ -29,6 +23,7 @@ const App: React.FC = () => {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<FundBasic[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
 
   // Initialize
   useEffect(() => {
@@ -62,9 +57,6 @@ const App: React.FC = () => {
   // Fetch chart data when selection or time changes
   useEffect(() => {
     if (!selectedFundCode) return;
-    
-    // Reset AI analysis when data context changes
-    setAiAnalysis(null);
     
     const loadChart = async () => {
       setLoadingChart(true);
@@ -114,27 +106,40 @@ const App: React.FC = () => {
     }
   };
 
-  const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSearch = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const query = e.target.value;
     setSearchQuery(query);
-    setSearchResults(searchFunds(query));
+    
+    if (!query || query.trim().length === 0) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+    
+    // 防抖：等待用户停止输入
+    setIsSearching(true);
+    
+    // 清除之前的定时器
+    if ((window as any).searchTimeout) {
+      clearTimeout((window as any).searchTimeout);
+    }
+    
+    // 设置新的定时器
+    (window as any).searchTimeout = setTimeout(async () => {
+      try {
+        const results = await searchFunds(query);
+        setSearchResults(results);
+      } catch (error) {
+        console.error('搜索失败:', error);
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300); // 300ms 防抖延迟
   };
 
   const handleTimeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSimulatedTime(e.target.value);
-  };
-
-  const handleAnalyze = async () => {
-    if (!selectedFund || chartData.length === 0) return;
-    setIsAnalyzing(true);
-    try {
-      const result = await analyzeFundTrend(selectedFund, chartData);
-      setAiAnalysis(result);
-    } catch (error) {
-      console.error("Analysis failed", error);
-    } finally {
-      setIsAnalyzing(false);
-    }
   };
   
   const selectedFund = fundsData.find(f => f.code === selectedFundCode);
@@ -147,13 +152,13 @@ const App: React.FC = () => {
   ];
 
   return (
-    <div className="flex h-full bg-gray-50 w-full overflow-hidden relative">
+    <div className="flex h-full bg-gray-50 w-full overflow-hidden relative touch-pan-y">
       {/* Sidebar - Fund List */}
       <div className={`
         bg-white border-r border-gray-200 flex flex-col z-10 transition-all duration-300
         ${selectedFundCode ? 'hidden md:flex md:w-80' : 'w-full md:w-80 flex'}
       `}>
-        <div className="p-4 border-b border-gray-100 bg-white space-y-4">
+        <div className="p-4 border-b border-gray-100 bg-white space-y-4 shrink-0">
           <div className="flex items-center justify-between">
             <h1 className="text-xl font-extrabold text-slate-800 flex items-center gap-2">
               <PieChart className="text-indigo-600" />
@@ -196,7 +201,7 @@ const App: React.FC = () => {
           <div className="text-xs text-gray-400 font-medium px-1">自选基金 ({fundsData.length})</div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-4 custom-scrollbar overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
           {loadingList && fundsData.length === 0 ? (
             <div className="text-center py-10 text-gray-400">加载中...</div>
           ) : (
@@ -226,7 +231,7 @@ const App: React.FC = () => {
         {selectedFund ? (
           <>
             {/* Header */}
-            <div className="bg-white p-4 md:p-6 border-b border-gray-100 flex justify-between items-center shadow-sm z-10 sticky top-0">
+            <div className="bg-white p-4 md:p-6 border-b border-gray-100 flex justify-between items-center shadow-sm z-10 sticky top-0 shrink-0">
               <div className="flex items-center gap-2 md:gap-0">
                 {/* Mobile Back Button */}
                 <button 
@@ -268,7 +273,7 @@ const App: React.FC = () => {
             </div>
 
             {/* Scrollable Content */}
-            <div className="flex-1 overflow-y-auto p-4 md:p-6 custom-scrollbar">
+            <div className="flex-1 overflow-y-auto p-4 md:p-6 custom-scrollbar overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
               <div className="max-w-6xl w-full mx-auto space-y-6">
                 
                 {/* Chart Section */}
@@ -324,13 +329,6 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
-                {/* AI Analysis */}
-                <AIAnalysis 
-                  analysis={aiAnalysis} 
-                  loading={isAnalyzing} 
-                  onAnalyze={handleAnalyze} 
-                />
-
                 {/* Disclaimer */}
                 <div className="mt-8 p-4 bg-yellow-50 rounded-lg border border-yellow-100 text-yellow-800 text-xs flex gap-2 items-start">
                    <AlertCircle size={14} className="mt-0.5 shrink-0" />
@@ -353,9 +351,9 @@ const App: React.FC = () => {
 
       {/* Search Modal Overlay - Moved to root level for correct z-index/stacking context */}
       {isSearchOpen && (
-          <div className="absolute inset-0 z-50 bg-black/20 backdrop-blur-sm flex items-start justify-center pt-20">
-            <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-gray-200 overflow-hidden transform transition-all scale-100 mx-4">
-               <div className="p-4 border-b border-gray-100 flex items-center gap-3">
+          <div className="absolute inset-0 z-50 bg-black/20 backdrop-blur-sm flex items-start justify-center pt-20 overflow-y-auto">
+            <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-gray-200 overflow-hidden transform transition-all scale-100 mx-4 my-4">
+               <div className="p-4 border-b border-gray-100 flex items-center gap-3 sticky top-0 bg-white z-10">
                  <Search className="text-gray-400" size={20} />
                  <input 
                     type="text"
@@ -369,15 +367,18 @@ const App: React.FC = () => {
                    取消
                  </button>
                </div>
-               <div className="max-h-80 overflow-y-auto">
-                 {searchQuery && searchResults.length === 0 && (
+               <div className="max-h-80 overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
+                 {isSearching && (
+                   <div className="p-8 text-center text-gray-400 text-sm">搜索中...</div>
+                 )}
+                 {!isSearching && searchQuery && searchResults.length === 0 && (
                    <div className="p-8 text-center text-gray-400 text-sm">未找到相关基金</div>
                  )}
-                 {searchResults.map(fund => (
+                 {!isSearching && searchResults.map(fund => (
                    <div 
                       key={fund.code}
                       onClick={() => handleAddFund(fund.code)}
-                      className="p-4 hover:bg-gray-50 cursor-pointer border-b border-gray-50 flex justify-between items-center"
+                      className="p-4 hover:bg-gray-50 cursor-pointer border-b border-gray-50 flex justify-between items-center active:bg-gray-100"
                    >
                      <div>
                        <div className="text-gray-800 font-medium">{fund.name}</div>
@@ -386,9 +387,9 @@ const App: React.FC = () => {
                      <Plus size={18} className="text-indigo-500" />
                    </div>
                  ))}
-                 {!searchQuery && (
+                 {!isSearching && !searchQuery && (
                    <div className="p-4 text-xs text-gray-400">
-                     热门搜索：易方达、白酒、新能源...
+                     热门搜索：易方达、华夏、白酒、新能源...
                    </div>
                  )}
                </div>

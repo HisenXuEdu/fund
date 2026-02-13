@@ -255,14 +255,14 @@ func (s *FundService) extractNetWorthTrend(jsContent string) ([]model.TrendPoint
 	for _, item := range rawData {
 		timestamp, ok1 := item["x"].(float64)
 		value, ok2 := item["y"].(float64)
-		
+
 		if !ok1 || !ok2 {
 			continue
 		}
 
 		// 转换时间戳为日期字符串
 		date := time.Unix(int64(timestamp)/1000, 0).Format("2006-01-02")
-		
+
 		result = append(result, model.TrendPoint{
 			Date:  date,
 			Value: value,
@@ -321,4 +321,86 @@ func (s *FundService) filterByPeriod(data []model.TrendPoint, period string) []m
 	}
 
 	return result
+}
+
+// FetchBatchFundsForRealtime 批量获取基金实时数据（用于实时数据服务）
+// 返回 map[基金代码] = {净值, 涨跌幅, 更新时间}
+func (s *FundService) FetchBatchFundsForRealtime(page, pageSize int) (map[string]map[string]interface{}, error) {
+	timestamp := time.Now().UnixNano() / 1e6
+	// 东方财富批量基金接口
+	url := fmt.Sprintf("https://fund.eastmoney.com/Data/Fund_JJJZ_Data.aspx?t=10&lx=1&letter=&gsid=&text=&sort=rzdf,desc&page=%d,%d&dt=%d&atfc=&onlySale=0&isLatest=0&_=%d",
+		page, pageSize, timestamp, timestamp)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %v", err)
+	}
+
+	// 设置请求头，模拟浏览器
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+	req.Header.Set("Referer", "https://fund.eastmoney.com/data/fundranking.html")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %v", err)
+	}
+
+	// 解析响应数据
+	return s.parseBatchFundsForRealtime(string(body))
+}
+
+// parseBatchFundsForRealtime 解析批量基金响应为实时数据格式
+func (s *FundService) parseBatchFundsForRealtime(content string) (map[string]map[string]interface{}, error) {
+	result := make(map[string]map[string]interface{})
+
+	// 提取基金数据数组
+	dataRe := regexp.MustCompile(`datas:\[(.*?)\],count`)
+	dataMatches := dataRe.FindStringSubmatch(content)
+	if len(dataMatches) < 2 {
+		return nil, fmt.Errorf("未找到基金数据")
+	}
+
+	dataStr := dataMatches[1]
+
+	// 按记录分割（每条记录用 "],["分隔）
+	recordRe := regexp.MustCompile(`\],\[`)
+	records := recordRe.Split(dataStr, -1)
+
+	for _, record := range records {
+		// 清理首尾的括号和引号
+		record = regexp.MustCompile(`^\["|"\]$`).ReplaceAllString(record, "")
+
+		// 按 "," 分割字段
+		fields := regexp.MustCompile(`","`).Split(record, -1)
+
+		// 至少要有基本字段
+		if len(fields) < 7 {
+			continue
+		}
+
+		// 清理首尾引号
+		code := regexp.MustCompile(`^"|"$`).ReplaceAllString(fields[0], "")
+		name := regexp.MustCompile(`^"|"$`).ReplaceAllString(fields[1], "")
+		netValue := regexp.MustCompile(`^"|"$`).ReplaceAllString(fields[4], "")
+		dayGrowth := regexp.MustCompile(`^"|"$`).ReplaceAllString(fields[6], "")
+		updateDate := ""
+		if len(fields) > 16 {
+			updateDate = fields[16]
+		}
+
+		result[code] = map[string]interface{}{
+			"name":       name,
+			"netValue":   netValue,
+			"dayGrowth":  dayGrowth,
+			"updateDate": updateDate,
+		}
+	}
+
+	return result, nil
 }

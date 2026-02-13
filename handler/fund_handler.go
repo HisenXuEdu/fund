@@ -134,9 +134,19 @@ func (h *FundHandler) GetIntradayData(w http.ResponseWriter, r *http.Request) {
 // GetFundList 获取基金列表接口
 func (h *FundHandler) GetFundList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	
+
 	fundList := h.intradayService.GetFundList()
-	
+
+	// 支持搜索过滤
+	keyword := r.URL.Query().Get("keyword")
+	fundType := r.URL.Query().Get("type")
+
+	// 过滤基金列表
+	filteredList := fundList
+	if keyword != "" || fundType != "" {
+		filteredList = h.filterFunds(fundList, keyword, fundType)
+	}
+
 	// 支持分页
 	page := 1
 	pageSize := 100
@@ -152,38 +162,85 @@ func (h *FundHandler) GetFundList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 计算分页
-	total := len(fundList)
+	total := len(filteredList)
 	start := (page - 1) * pageSize
 	end := start + pageSize
 
 	if start >= total {
 		start = 0
 		end = 0
-	} else if end > total {
-		end = total
+		filteredList = []interface{}{}
+	} else {
+		if end > total {
+			end = total
+		}
+		filteredList = filteredList[start:end]
 	}
 
 	response := map[string]interface{}{
 		"total":    total,
 		"page":     page,
 		"pageSize": pageSize,
-		"data":     fundList[start:end],
+		"data":     filteredList,
 	}
 
 	h.responseSuccess(w, response)
 }
 
+// filterFunds 过滤基金列表
+func (h *FundHandler) filterFunds(fundList []interface{}, keyword, fundType string) []interface{} {
+	result := make([]interface{}, 0)
+
+	for _, item := range fundList {
+		fund, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// 类型过滤
+		if fundType != "" {
+			if fType, ok := fund["type"].(string); ok {
+				if fType != fundType {
+					continue
+				}
+			}
+		}
+
+		// 关键词过滤（支持代码和名称）
+		if keyword != "" {
+			matched := false
+			if code, ok := fund["code"].(string); ok {
+				if regexp.MustCompile(keyword).MatchString(code) {
+					matched = true
+				}
+			}
+			if name, ok := fund["name"].(string); ok {
+				if regexp.MustCompile(keyword).MatchString(name) {
+					matched = true
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+
+		result = append(result, fund)
+	}
+
+	return result
+}
+
 // GetServiceStatus 获取服务状态接口
 func (h *FundHandler) GetServiceStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	
+
 	status := map[string]interface{}{
 		"status":      "running",
 		"fundCount":   len(h.intradayService.GetFundList()),
 		"dataCount":   h.intradayService.GetDataCount(),
 		"currentTime": time.Now().Format("2006-01-02 15:04:05"),
 	}
-	
+
 	h.responseSuccess(w, status)
 }
 

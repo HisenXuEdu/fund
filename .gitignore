@@ -1,0 +1,185 @@
+# ============================================
+# Go 相关
+# ============================================
+# 编译后的二进制文件
+fund
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# 测试文件
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go 依赖
+vendor/
+go.work
+go.work.sum
+
+# ============================================
+# Node.js / 前端相关
+# ============================================
+# 依赖
+node_modules/
+web/node_modules/
+**/node_modules/
+
+# 构建输出
+web/dist/
+dist/
+build/
+.next/
+out/
+
+# 包管理器
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.yarn/
+.pnpm-debug.log*
+
+# ============================================
+# 环境配置
+# ============================================
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ============================================
+# 日志文件
+# ============================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+logs_*/
+
+# ============================================
+# 编辑器和IDE
+# ============================================
+# VS Code
+.vscode/
+.vscode-test/
+*.code-workspace
+
+# JetBrains IDEs (IntelliJ, GoLand, WebStorm等)
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Vim
+*.swp
+*.swo
+*~
+.*.sw[a-z]
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# ============================================
+# 操作系统文件
+# ============================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+.Trash-*
+
+# ============================================
+# 临时文件和缓存
+# ============================================
+*.tmp
+*.temp
+*.bak
+*.backup
+*.cache
+.cache/
+tmp/
+temp/
+
+# ============================================
+# 测试和调试文件
+# ============================================
+# 测试脚本
+test_*.sh
+*_test.sh
+
+# 测试响应数据
+*_response_*.txt
+*_response_*.json
+sina_*funds_response*.txt
+
+# 调试文件
+debug
+debug.test
+*.pprof
+
+# ============================================
+# 数据和配置文件
+# ============================================
+# 数据目录 (持久化存储)
+data/
+
+# 监控配置的备份文件
+watch_funds*.json
+!watch_funds.json
+
+# ============================================
+# 部署和脚本文件
+# ============================================
+# 临时部署脚本
+deploy_*.sh
+!deploy.sh
+
+# 其他临时脚本
+test_*.sh
+
+# ============================================
+# 其他
+# ============================================
+# 压缩文件
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# 证书和密钥
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# SQLite数据库
+*.db
+*.sqlite
+*.sqlite3

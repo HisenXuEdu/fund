@@ -15,16 +15,13 @@ export interface FundData extends FundBasic {
 export interface ChartDataPoint {
   time: string;
   value: number;
+  rate?: number;    // 后端返回的涨跌幅百分比
   average?: number; // Optional now as it's only for 1D
 }
 
 export type TimeRange = '1D' | '1W' | '1M' | '3M';
 
-export interface AIAnalysisResult {
-  summary: string;
-  advice: string;
-  bullish: boolean;
-}
+
 
 export enum ViewState {
   DASHBOARD = 'DASHBOARD',
