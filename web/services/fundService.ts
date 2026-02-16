@@ -1,5 +1,5 @@
 import { FundData, ChartDataPoint, FundBasic, TimeRange } from '../types';
-import { MARKET_FUNDS, STORAGE_KEY, DEFAULT_MY_FUNDS } from '../constants';
+import { STORAGE_KEY, DEFAULT_MY_FUNDS } from '../constants';
 
 // API配置
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
@@ -30,41 +30,6 @@ const getMinutesFromTime = (timeStr: string): number => {
   }
 
   return 120 + (minutesFromMidnight - startAfternoon);
-};
-
-// Deterministic pseudo-random trend generator based on fund code
-const getDayTrend = (code: string, previousClose: number): number[] => {
-  const seed = parseInt(code.replace(/\D/g, '')) || 12345;
-  const values: number[] = [previousClose];
-  
-  // Simple Linear Congruential Generator
-  let state = seed;
-  const rand = () => {
-    state = (state * 9301 + 49297) % 233280;
-    return state / 233280;
-  };
-
-  let current = previousClose;
-  for (let i = 0; i < TOTAL_MINUTES; i++) {
-    // Volatility approx 0.3% per minute range
-    const change = (rand() - 0.5) * 0.003; 
-    current = current * (1 + change);
-    values.push(current);
-  }
-  return values;
-};
-
-// Helper to get formatted time string from index
-const getDisplayTime = (index: number): string => {
-  let totalMins;
-  if (index <= 120) {
-    totalMins = 9 * 60 + 30 + index;
-  } else {
-    totalMins = 13 * 60 + (index - 120);
-  }
-  const h = Math.floor(totalMins / 60);
-  const m = totalMins % 60;
-  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
 };
 
 export const fetchFundDetails = async (code: string, timeStr: string): Promise<FundData> => {
@@ -140,107 +105,10 @@ export const fetchFundDetails = async (code: string, timeStr: string): Promise<F
       tags
     };
   } catch (error) {
-    console.error('获取基金数据失败，使用模拟数据:', error);
-    // 回退到模拟数据
-    return fetchFundDetailsFallback(code, timeStr);
+    console.error('获取基金数据失败:', error);
+    // 不使用模拟数据,返回错误状态
+    throw error;
   }
-};
-
-// 回退方案：使用模拟数据
-const fetchFundDetailsFallback = async (code: string, timeStr: string): Promise<FundData> => {
-  // Simulate network delay
-  await new Promise(resolve => setTimeout(resolve, 200));
-
-  // 尝试从搜索接口获取基金基本信息
-  let basic: FundBasic = { code, name: `基金${code}`, type: '混合型' };
-  
-  try {
-    const searchResponse = await fetch(`${API_BASE_URL}/fund/list?keyword=${code}&pageSize=1`);
-    if (searchResponse.ok) {
-      const searchData = await searchResponse.json();
-      if (searchData.data && searchData.data.length > 0) {
-        const fund = searchData.data[0];
-        basic = {
-          code: fund.code || code,
-          name: fund.name || `基金${code}`,
-          type: fund.type || '混合型'
-        };
-      }
-    }
-  } catch (err) {
-    console.log('无法从搜索接口获取基金信息，使用默认值');
-  }
-  
-  // 如果还是找不到，尝试从本地常量查找
-  const localFund = MARKET_FUNDS.find(f => f.code === code);
-  if (localFund) {
-    basic = localFund;
-  }
-  
-  // Deterministic previous close
-  const seed = parseInt(code.replace(/\D/g, '')) || 1;
-  const previousClose = 1.0 + (seed % 50) / 10;
-  
-  const fullTrend = getDayTrend(code, previousClose);
-  const targetIndex = getMinutesFromTime(timeStr);
-  const currentIndex = Math.min(targetIndex, fullTrend.length - 1);
-  
-  const currentValuation = fullTrend[currentIndex];
-  const growthRate = ((currentValuation - previousClose) / previousClose) * 100;
-  
-  const tags = [basic.type];
-  if (growthRate > 1.5) tags.push('大涨');
-  else if (growthRate < -1.5) tags.push('大跌');
-  else if (Math.abs(growthRate) < 0.2) tags.push('震荡');
-  
-  return {
-    ...basic,
-    previousClose,
-    currentValuation,
-    growthRate,
-    updateTime: timeStr,
-    tags
-  };
-};
-
-// Generate historical daily candles
-const getHistoricalTrend = (code: string, days: number, currentVal: number): ChartDataPoint[] => {
-  const data: ChartDataPoint[] = [];
-  const seed = parseInt(code.replace(/\D/g, '')) || 1;
-  
-  let state = seed * 7; // Different seed from intraday
-  const rand = () => {
-    state = (state * 9301 + 49297) % 233280;
-    return state / 233280;
-  };
-
-  // Generate backwards from current value
-  let val = currentVal;
-  
-  // Add today first (will be reversed later)
-  const today = new Date();
-  
-  for (let i = 0; i < days; i++) {
-    const date = new Date(today);
-    date.setDate(date.getDate() - i);
-    
-    // Format MM-DD
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const day = date.getDate().toString().padStart(2, '0');
-    const timeStr = `${month}-${day}`;
-
-    data.push({
-      time: timeStr,
-      value: val,
-    });
-
-    // Determine previous day value (reverse volatility)
-    // Daily volatility approx 1-2%
-    const change = (rand() - 0.5) * 0.04;
-    val = val / (1 + change);
-  }
-
-  return data.reverse();
 };
 
 export const fetchFundChartData = async (code: string, timeRange: TimeRange, timeStr: string): Promise<ChartDataPoint[]> => {
@@ -262,8 +130,8 @@ export const fetchFundChartData = async (code: string, timeRange: TimeRange, tim
       }
       
       if (!data.data || data.data.length === 0) {
-        // 回退到模拟数据
-        return fetchFundChartDataFallback(code, timeRange, timeStr);
+        // 返回空数组,不使用模拟数据
+        return [];
       }
       
       const targetMinutes = getMinutesFromTime(timeStr);
@@ -304,8 +172,8 @@ export const fetchFundChartData = async (code: string, timeRange: TimeRange, tim
       const data = await response.json();
       
       if (!data.trendData || data.trendData.length === 0) {
-        // 回退到模拟数据
-        return fetchFundChartDataFallback(code, timeRange, timeStr);
+        // 返回空数组,不使用模拟数据
+        return [];
       }
       
       return data.trendData.map((point: any) => ({
@@ -314,50 +182,9 @@ export const fetchFundChartData = async (code: string, timeRange: TimeRange, tim
       }));
     }
   } catch (error) {
-    console.error('获取图表数据失败，使用模拟数据:', error);
-    // 回退到模拟数据
-    return fetchFundChartDataFallback(code, timeRange, timeStr);
-  }
-};
-
-// 回退方案：使用模拟数据
-const fetchFundChartDataFallback = async (code: string, timeRange: TimeRange, timeStr: string): Promise<ChartDataPoint[]> => {
-  await new Promise(resolve => setTimeout(resolve, 300));
-  
-  const seed = parseInt(code.replace(/\D/g, '')) || 1;
-  const previousClose = 1.0 + (seed % 50) / 10;
-  
-  if (timeRange === '1D') {
-    const fullTrend = getDayTrend(code, previousClose);
-    const targetIndex = getMinutesFromTime(timeStr);
-    const currentIndex = Math.min(targetIndex, fullTrend.length - 1);
-
-    const data: ChartDataPoint[] = [];
-    // Start from 1 to skip the initial previousClose point at t=0 effectively
-    for (let i = 1; i <= currentIndex; i++) {
-      data.push({
-        time: getDisplayTime(i),
-        value: fullTrend[i],
-        average: previousClose
-      });
-    }
-
-    if (data.length === 0) {
-        data.push({ time: '09:30', value: previousClose, average: previousClose });
-    }
-    return data;
-  } else {
-    // Calculate current value to be consistent with header
-    const fullTrend = getDayTrend(code, previousClose);
-    const targetIndex = getMinutesFromTime(timeStr);
-    const currentIndex = Math.min(targetIndex, fullTrend.length - 1);
-    const currentValuation = fullTrend[currentIndex];
-
-    let days = 7;
-    if (timeRange === '1M') days = 30;
-    if (timeRange === '3M') days = 90;
-
-    return getHistoricalTrend(code, days, currentValuation);
+    console.error('获取图表数据失败:', error);
+    // 不使用模拟数据,返回空数组
+    return [];
   }
 };
 
@@ -398,10 +225,8 @@ export const searchFunds = async (query: string): Promise<FundBasic[]> => {
       type: fund.type
     }));
   } catch (error) {
-    console.error('搜索基金失败，使用本地数据:', error);
-    // 回退到本地数据
-    return MARKET_FUNDS.filter(
-      f => f.code.includes(query) || f.name.includes(query)
-    );
+    console.error('搜索基金失败:', error);
+    // 不使用本地数据,返回空数组
+    return [];
   }
 };
