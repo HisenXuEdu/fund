@@ -728,3 +728,8 @@ func (s *IntradayService) GetDataCount() int {
 	defer s.dataMutex.RUnlock()
 	return len(s.intradayData)
 }
+
+// SaveData 保存数据到磁盘(供外部调用)
+func (s *IntradayService) SaveData() error {
+	return s.SaveToDisk()
+}
