@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -35,6 +34,7 @@ type IntradayService struct {
 	watchConfig  *WatchConfig                       // 监控配置
 	configFile   string                             // 配置文件路径
 	fundService  *FundService                       // 基金服务（用于批量获取）
+	lastDataDate string                             // 最后一次采集数据的日期 (YYYY-MM-DD)
 }
 
 // NewIntradayService 创建日内服务实例
@@ -283,144 +283,6 @@ func (s *IntradayService) fetchRealtimeEstimate(fundCode string) (*model.Realtim
 	return nil, fmt.Errorf("获取失败，已重试%d次", maxRetries)
 }
 
-// fetchAllFundsRealtime 批量获取全量基金的实时数据（并发版本）
-func (s *IntradayService) fetchAllFundsRealtime() {
-	now := time.Now()
-
-	// 判断是否在交易时间
-	if !s.isTradingTime(now) {
-		log.Printf("⏸️  非交易时间 [%s], 跳过本次采集", now.Format("15:04"))
-		return
-	}
-
-	today := now.Format("2006-01-02")
-	currentTime := now.Format("15:04")
-
-	totalFunds := len(s.fundList)
-	log.Printf("📊 开始获取全量基金实时数据 [%s], 基金总数: %d", currentTime, totalFunds)
-
-	startTime := time.Now()
-
-	// 使用并发控制
-	const maxWorkers = 20 // 并发worker数量（降低以避免限流）
-	const batchSize = 500 // 每批处理的基金数量
-
-	var successCount, failCount int64
-	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, maxWorkers)
-
-	// 分批处理
-	for batchStart := 0; batchStart < totalFunds; batchStart += batchSize {
-		batchEnd := batchStart + batchSize
-		if batchEnd > totalFunds {
-			batchEnd = totalFunds
-		}
-
-		batch := s.fundList[batchStart:batchEnd]
-		log.Printf("⏳ 处理第 %d-%d 只基金...", batchStart+1, batchEnd)
-
-		for _, fund := range batch {
-			wg.Add(1)
-			semaphore <- struct{}{} // 获取信号量
-
-			go func(f model.FundBasicInfo) {
-				defer wg.Done()
-				defer func() { <-semaphore }() // 释放信号量
-
-				// 获取实时估值
-				realtime, err := s.fetchRealtimeEstimate(f.Code)
-				if err != nil {
-					atomic.AddInt64(&failCount, 1)
-					return
-				}
-
-				// 解析估算净值和涨跌幅
-				value, _ := strconv.ParseFloat(realtime.Gsz, 64)
-				rate, _ := strconv.ParseFloat(realtime.GsZzl, 64)
-
-				// 存储数据
-				s.dataMutex.Lock()
-
-				if _, exists := s.intradayData[f.Code]; !exists {
-					// 首次创建
-					s.intradayData[f.Code] = &model.FundIntradayData{
-						Code: f.Code,
-						Name: f.Name,
-						Date: today,
-						Data: []model.IntradayPoint{},
-					}
-				}
-
-				// 更新或添加最新数据点
-				fundData := s.intradayData[f.Code]
-
-				// 检查日期是否需要清空（新的一天）
-				if fundData.Date != today {
-					fundData.Date = today
-					fundData.Data = []model.IntradayPoint{}
-				}
-
-				// 添加或更新当前时间点的数据
-				found := false
-				for i := range fundData.Data {
-					if fundData.Data[i].Time == currentTime {
-						fundData.Data[i].Value = value
-						fundData.Data[i].Rate = rate
-						found = true
-						break
-					}
-				}
-				if !found {
-					fundData.Data = append(fundData.Data, model.IntradayPoint{
-						Time:  currentTime,
-						Value: value,
-						Rate:  rate,
-					})
-				}
-
-				s.dataMutex.Unlock()
-
-				atomic.AddInt64(&successCount, 1)
-			}(fund)
-
-			// 避免请求过快（增加延迟避免限流）
-			time.Sleep(20 * time.Millisecond)
-		}
-
-		// 等待当前批次完成
-		wg.Wait()
-
-		elapsed := time.Since(startTime)
-		currentSuccess := atomic.LoadInt64(&successCount)
-		currentFail := atomic.LoadInt64(&failCount)
-
-		// 计算失败率
-		total := currentSuccess + currentFail
-		failRate := 0.0
-		if total > 0 {
-			failRate = float64(currentFail) / float64(total) * 100
-		}
-
-		log.Printf("📈 进度: %d/%d (%.1f%%), 成功: %d, 失败: %d (失败率: %.1f%%), 耗时: %v",
-			batchEnd, totalFunds, float64(batchEnd)/float64(totalFunds)*100,
-			currentSuccess, currentFail, failRate, elapsed)
-
-		// 动态调整：如果失败率过高，增加延迟
-		if failRate > 50.0 {
-			log.Printf("⚠️  失败率过高 (%.1f%%), 暂停30秒后继续...", failRate)
-			time.Sleep(30 * time.Second)
-		} else if failRate > 30.0 {
-			log.Printf("⚠️  失败率偏高 (%.1f%%), 暂停10秒后继续...", failRate)
-			time.Sleep(10 * time.Second)
-		}
-	}
-
-	elapsed := time.Since(startTime)
-	finalSuccess := atomic.LoadInt64(&successCount)
-	finalFail := atomic.LoadInt64(&failCount)
-	log.Printf("✅ 采集完成: 成功 %d, 失败 %d, 耗时 %v", finalSuccess, finalFail, elapsed)
-}
-
 // fetchAllFundsRealtimeBatch 使用批量接口获取全量基金实时数据
 func (s *IntradayService) fetchAllFundsRealtimeBatch() {
 	now := time.Now()
@@ -433,6 +295,9 @@ func (s *IntradayService) fetchAllFundsRealtimeBatch() {
 
 	today := now.Format("2006-01-02")
 	currentTime := now.Format("15:04")
+
+	// 检查日期变化,如果是新的一天则清理旧数据
+	s.checkAndClearOldData(today)
 
 	log.Printf("📊 开始使用批量接口获取全量基金实时数据 [%s]", currentTime)
 
@@ -567,6 +432,9 @@ func (s *IntradayService) fetchWatchListRealtime() {
 
 	today := now.Format("2006-01-02")
 	currentTime := now.Format("15:04")
+
+	// 检查日期变化,如果是新的一天则清理旧数据
+	s.checkAndClearOldData(today)
 
 	watchList := s.watchConfig.WatchList
 	totalFunds := len(watchList)
@@ -759,7 +627,7 @@ func (s *IntradayService) Start() error {
 
 	// 启动定时任务：每5分钟保存数据到硬盘
 	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
+		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 
 		for {
@@ -821,7 +689,7 @@ func (s *IntradayService) GetIntradayData(fundCode string) (*model.FundIntradayD
 	return data, nil
 }
 
-// ClearTodayData 清理当天数据
+// ClearTodayData 清理当天数据(包括内存和磁盘)
 func (s *IntradayService) ClearTodayData() {
 	s.dataMutex.Lock()
 	defer s.dataMutex.Unlock()
@@ -829,7 +697,29 @@ func (s *IntradayService) ClearTodayData() {
 	count := len(s.intradayData)
 	s.intradayData = make(map[string]*model.FundIntradayData)
 
-	log.Printf("🗑️  已清理当天数据,共 %d 只基金", count)
+	// 清理磁盘数据文件
+	dataFile := filepath.Join(s.dataDir, "intraday_data.json")
+	if err := os.Remove(dataFile); err != nil && !os.IsNotExist(err) {
+		log.Printf("⚠️  清理磁盘数据文件失败: %v", err)
+	}
+
+	log.Printf("🗑️  已清理当天数据(内存+磁盘),共 %d 只基金", count)
+}
+
+// checkAndClearOldData 检查日期变化,如果是新的一天则清理旧数据
+func (s *IntradayService) checkAndClearOldData(currentDate string) {
+	// 如果没有记录日期,直接更新为当前日期
+	if s.lastDataDate == "" {
+		s.lastDataDate = currentDate
+		return
+	}
+
+	// 如果日期发生变化(新的一天),清理旧数据
+	if s.lastDataDate != currentDate {
+		log.Printf("📅 检测到日期变化: %s -> %s, 清理前一天的数据", s.lastDataDate, currentDate)
+		s.ClearTodayData()
+		s.lastDataDate = currentDate
+	}
 }
 
 // GetDataCount 获取已采集的基金数量
