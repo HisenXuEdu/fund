@@ -12,6 +12,7 @@ const App: React.FC = () => {
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [loadingChart, setLoadingChart] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   
   // Time Travel State
   const [simulatedTime, setSimulatedTime] = useState<string>('15:00');
@@ -39,12 +40,15 @@ const App: React.FC = () => {
   const loadFundsData = useCallback(async () => {
     if (myFundCodes.length === 0) return;
     setLoadingList(true);
+    setErrorMessage(null);
     try {
       const promises = myFundCodes.map(code => fetchFundDetails(code, simulatedTime));
       const results = await Promise.all(promises);
       setFundsData(results);
     } catch (err) {
-      console.error(err);
+      console.error('加载基金数据失败:', err);
+      setErrorMessage('获取基金数据失败,请检查网络连接');
+      setFundsData([]);
     } finally {
       setLoadingList(false);
     }
@@ -65,7 +69,8 @@ const App: React.FC = () => {
         const data = await fetchFundChartData(selectedFundCode, timeRange, simulatedTime);
         setChartData(data);
       } catch (err) {
-        console.error(err);
+        console.error('加载图表数据失败:', err);
+        setChartData([]);
       } finally {
         setLoadingChart(false);
       }
@@ -204,6 +209,21 @@ const App: React.FC = () => {
         <div className="flex-1 overflow-y-auto p-4 custom-scrollbar overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
           {loadingList && fundsData.length === 0 ? (
             <div className="text-center py-10 text-gray-400">加载中...</div>
+          ) : errorMessage ? (
+            <div className="text-center py-10">
+              <AlertCircle className="mx-auto mb-2 text-red-400" size={32} />
+              <div className="text-red-500 text-sm">{errorMessage}</div>
+              <button 
+                onClick={handleRefresh}
+                className="mt-3 px-4 py-2 bg-indigo-500 text-white rounded-lg text-sm hover:bg-indigo-600 transition-colors"
+              >
+                重试
+              </button>
+            </div>
+          ) : fundsData.length === 0 && myFundCodes.length > 0 ? (
+            <div className="text-center py-10 text-gray-400 text-sm">
+              暂无数据
+            </div>
           ) : (
             fundsData.map(fund => (
               <FundCard 
@@ -215,7 +235,7 @@ const App: React.FC = () => {
               />
             ))
           )}
-          {fundsData.length === 0 && !loadingList && (
+          {fundsData.length === 0 && myFundCodes.length === 0 && !loadingList && !errorMessage && (
             <div className="text-center py-10 text-gray-400 text-sm">
               暂无自选基金<br/>点击右上角 + 添加
             </div>
@@ -299,6 +319,11 @@ const App: React.FC = () => {
                    
                    {loadingChart ? (
                      <div className="h-64 w-full bg-gray-100 rounded-xl animate-pulse"></div>
+                   ) : chartData.length === 0 ? (
+                     <div className="h-64 w-full bg-gray-50 rounded-xl flex flex-col items-center justify-center border border-gray-200">
+                       <AlertCircle className="text-gray-300 mb-2" size={40} />
+                       <p className="text-gray-400 text-sm">暂无图表数据</p>
+                     </div>
                    ) : (
                      <FundChart 
                         data={chartData} 

@@ -121,7 +121,7 @@ func (h *FundHandler) GetIntradayData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 获取日内数据
-	intradayData, err := h.intradayService.GetIntradayData(fundCode)
+	intradayData, err := h.intradayService.GetIntradayDataRealtime(fundCode)
 	if err != nil {
 		h.responseError(w, http.StatusNotFound, err.Error())
 		return
