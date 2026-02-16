@@ -171,14 +171,15 @@ export const fetchFundChartData = async (code: string, timeRange: TimeRange, tim
       
       const data = await response.json();
       
-      if (!data.trendData || data.trendData.length === 0) {
+      // 后端返回的是 FundTrend 结构: { code, name, period, data: [] }
+      if (!data.data || data.data.length === 0) {
         // 返回空数组,不使用模拟数据
         return [];
       }
       
-      return data.trendData.map((point: any) => ({
-        time: point.time || point.date,
-        value: point.value || point.netWorth
+      return data.data.map((point: any) => ({
+        time: point.date,  // 后端返回的是 date 字段
+        value: point.value
       }));
     }
   } catch (error) {
