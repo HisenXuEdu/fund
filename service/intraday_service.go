@@ -35,6 +35,8 @@ type IntradayService struct {
 	configFile   string                             // 配置文件路径
 	fundService  *FundService                       // 基金服务（用于批量获取）
 	lastDataDate string                             // 最后一次采集数据的日期 (YYYY-MM-DD)
+	csrfToken    string                             // fund123.cn的CSRF令牌
+	fundKeyCache map[string]string                  // 基金代码到fundKey的缓存
 }
 
 // NewIntradayService 创建日内服务实例
@@ -48,6 +50,7 @@ func NewIntradayService() *IntradayService {
 		dataDir:      "./data",             // 数据存储目录
 		configFile:   "./watch_funds.json", // 配置文件路径
 		fundService:  NewFundService(),     // 初始化基金服务
+		fundKeyCache: make(map[string]string),
 	}
 }
 
@@ -229,58 +232,194 @@ func (s *IntradayService) GetFundList() []interface{} {
 	return result
 }
 
-// fetchRealtimeEstimate 获取单个基金的实时估值（带重试）
-func (s *IntradayService) fetchRealtimeEstimate(fundCode string) (*model.RealtimeData, error) {
-	maxRetries := 2 // 最多重试2次
+// Fund123IntradayPoint fund123接口返回的分时数据点
+type Fund123IntradayPoint struct {
+	Time     string  `json:"x"` // 时间 HH:MM
+	Growth   float64 `json:"y"` // 涨跌幅
+	NetValue float64 `json:"equityReturn"` // 净值
+}
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			// 重试前等待
-			time.Sleep(time.Duration(attempt*500) * time.Millisecond)
-		}
+// getCSRFToken 获取fund123.cn的CSRF令牌
+func (s *IntradayService) getCSRFToken() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-		timestamp := time.Now().UnixNano() / 1e6
-		url := fmt.Sprintf("http://fundgz.1234567.com.cn/js/%s.js?rt=%d", fundCode, timestamp)
-
-		// 创建带超时的请求
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-		if err != nil {
-			cancel()
-			continue
-		}
-
-		resp, err := s.httpClient.Do(req)
-		if err != nil {
-			cancel()
-			continue
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		cancel()
-
-		if err != nil {
-			continue
-		}
-
-		// 解析 jsonpgz({...})
-		re := regexp.MustCompile(`jsonpgz\((.*?)\);?$`)
-		matches := re.FindStringSubmatch(string(body))
-		if len(matches) < 2 {
-			continue
-		}
-
-		var realtimeData model.RealtimeData
-		if err := json.Unmarshal([]byte(matches[1]), &realtimeData); err != nil {
-			continue
-		}
-
-		return &realtimeData, nil
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://www.fund123.cn/fund", nil)
+	if err != nil {
+		return fmt.Errorf("创建请求失败: %v", err)
 	}
 
-	return nil, fmt.Errorf("获取失败，已重试%d次", maxRetries)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("读取响应失败: %v", err)
+	}
+
+	// 提取CSRF令牌
+	re := regexp.MustCompile(`"csrf":"(.*?)"`)
+	matches := re.FindStringSubmatch(string(body))
+	if len(matches) < 2 {
+		return fmt.Errorf("未找到CSRF令牌")
+	}
+
+	s.csrfToken = matches[1]
+	log.Printf("✅ 获取CSRF令牌成功: %s", s.csrfToken[:8]+"...")
+	return nil
+}
+
+// getFundKey 根据基金代码获取fundKey
+func (s *IntradayService) getFundKey(fundCode string) (string, string, error) {
+	// 检查缓存
+	s.dataMutex.RLock()
+	if fundKey, exists := s.fundKeyCache[fundCode]; exists {
+		// 获取基金名称
+		fundName := fundCode
+		if data, ok := s.intradayData[fundCode]; ok {
+			fundName = data.Name
+		}
+		s.dataMutex.RUnlock()
+		return fundKey, fundName, nil
+	}
+	s.dataMutex.RUnlock()
+
+	// 如果没有CSRF令牌，先获取
+	if s.csrfToken == "" {
+		if err := s.getCSRFToken(); err != nil {
+			return "", "", err
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	url := fmt.Sprintf("https://www.fund123.cn/api/fund/search?keyword=%s&_csrf=%s", fundCode, s.csrfToken)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("创建请求失败: %v", err)
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("Referer", "https://www.fund123.cn/fund")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("读取响应失败: %v", err)
+	}
+
+	// 解析JSON
+	var result struct {
+		Data []struct {
+			FundKey  string `json:"fundKey"`
+			FundName string `json:"fundName"`
+			FundCode string `json:"fundCode"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", "", fmt.Errorf("解析JSON失败: %v", err)
+	}
+
+	if len(result.Data) == 0 {
+		return "", "", fmt.Errorf("未找到基金: %s", fundCode)
+	}
+
+	fundKey := result.Data[0].FundKey
+	fundName := result.Data[0].FundName
+
+	// 缓存fundKey
+	s.dataMutex.Lock()
+	s.fundKeyCache[fundCode] = fundKey
+	s.dataMutex.Unlock()
+
+	return fundKey, fundName, nil
+}
+
+// fetchFund123IntradayData 从fund123.cn获取分时数据
+func (s *IntradayService) fetchFund123IntradayData(fundCode string) ([]Fund123IntradayPoint, string, error) {
+	// 获取fundKey
+	fundKey, fundName, err := s.getFundKey(fundCode)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// 如果没有CSRF令牌，先获取
+	if s.csrfToken == "" {
+		if err := s.getCSRFToken(); err != nil {
+			return nil, "", err
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	url := fmt.Sprintf("https://www.fund123.cn/api/fund/trend-data?fundKey=%s&_csrf=%s", fundKey, s.csrfToken)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("创建请求失败: %v", err)
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("Referer", "https://www.fund123.cn/fund")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("读取响应失败: %v", err)
+	}
+
+	// 解析JSON
+	var result struct {
+		Data []Fund123IntradayPoint `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, "", fmt.Errorf("解析JSON失败: %v", err)
+	}
+
+	return result.Data, fundName, nil
+}
+
+// fetchRealtimeEstimate 获取单个基金的实时估值（使用fund123接口）
+func (s *IntradayService) fetchRealtimeEstimate(fundCode string) (*model.RealtimeData, error) {
+	// 使用fund123接口获取分时数据
+	intradayPoints, fundName, err := s.fetchFund123IntradayData(fundCode)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(intradayPoints) == 0 {
+		return nil, fmt.Errorf("无分时数据")
+	}
+
+	// 获取最新的数据点
+	latest := intradayPoints[len(intradayPoints)-1]
+
+	// 转换为RealtimeData格式（保持兼容性）
+	return &model.RealtimeData{
+		FundCode: fundCode,
+		Name:     fundName,
+		Gsz:      fmt.Sprintf("%.4f", latest.NetValue),
+		GsZzl:    fmt.Sprintf("%.2f", latest.Growth),
+		Gztime:   latest.Time,
+	}, nil
 }
 
 // fetchAllFundsRealtimeBatch 使用批量接口获取全量基金实时数据
@@ -415,7 +554,7 @@ func (s *IntradayService) processBatchFundsData(fundsData map[string]map[string]
 	}
 }
 
-// fetchWatchListRealtime 获取监控列表中基金的实时数据（均匀分布）
+// fetchWatchListRealtime 获取监控列表中基金的实时数据（使用fund123完整分时数据）
 func (s *IntradayService) fetchWatchListRealtime() {
 	if s.watchConfig == nil || len(s.watchConfig.WatchList) == 0 {
 		log.Printf("⚠️  监控列表为空，跳过采集")
@@ -440,10 +579,10 @@ func (s *IntradayService) fetchWatchListRealtime() {
 	totalFunds := len(watchList)
 	fetchInterval := s.watchConfig.FetchInterval
 
-	log.Printf("📊 开始获取监控列表基金实时数据 [%s], 基金数: %d, 周期: %d秒",
+	log.Printf("📊 开始获取监控列表基金分时数据 [%s], 基金数: %d, 周期: %d秒",
 		currentTime, totalFunds, fetchInterval)
 
-	// 计算每只基金的请求间隔（均匀分布在30秒内）
+	// 计算每只基金的请求间隔（均匀分布）
 	intervalPerFund := time.Duration(fetchInterval*1000/totalFunds) * time.Millisecond
 	log.Printf("⏱️  每只基金间隔: %v", intervalPerFund)
 
@@ -451,70 +590,40 @@ func (s *IntradayService) fetchWatchListRealtime() {
 	var successCount, failCount int
 
 	for i, fundCode := range watchList {
-		// 获取基金名称
-		fundName := fundCode
-		for _, fund := range s.fundList {
-			if fund.Code == fundCode {
-				fundName = fund.Name
-				break
-			}
-		}
-
-		// 获取实时估值
-		realtime, err := s.fetchRealtimeEstimate(fundCode)
+		// 获取完整分时数据
+		intradayPoints, fundName, err := s.fetchFund123IntradayData(fundCode)
 		if err != nil {
-			log.Printf("❌ [%d/%d] %s (%s) 获取失败: %v",
-				i+1, totalFunds, fundName, fundCode, err)
+			log.Printf("❌ [%d/%d] %s 获取失败: %v", i+1, totalFunds, fundCode, err)
+			failCount++
+		} else if len(intradayPoints) == 0 {
+			log.Printf("⚠️  [%d/%d] %s (%s) 无分时数据", i+1, totalFunds, fundName, fundCode)
 			failCount++
 		} else {
-			// 解析估算净值和涨跌幅
-			value, _ := strconv.ParseFloat(realtime.Gsz, 64)
-			rate, _ := strconv.ParseFloat(realtime.GsZzl, 64)
-
-			// 存储数据
+			// 存储完整分时数据
 			s.dataMutex.Lock()
 
-			if _, exists := s.intradayData[fundCode]; !exists {
-				// 首次创建
-				s.intradayData[fundCode] = &model.FundIntradayData{
-					Code: fundCode,
-					Name: fundName,
-					Date: today,
-					Data: []model.IntradayPoint{},
-				}
+			// 创建或更新基金数据
+			s.intradayData[fundCode] = &model.FundIntradayData{
+				Code: fundCode,
+				Name: fundName,
+				Date: today,
+				Data: make([]model.IntradayPoint, 0, len(intradayPoints)),
 			}
 
-			// 更新或添加最新数据点
-			fundData := s.intradayData[fundCode]
-
-			// 检查日期是否需要清空（新的一天）
-			if fundData.Date != today {
-				fundData.Date = today
-				fundData.Data = []model.IntradayPoint{}
-			}
-
-			// 添加或更新当前时间点的数据
-			found := false
-			for j := range fundData.Data {
-				if fundData.Data[j].Time == currentTime {
-					fundData.Data[j].Value = value
-					fundData.Data[j].Rate = rate
-					found = true
-					break
-				}
-			}
-			if !found {
-				fundData.Data = append(fundData.Data, model.IntradayPoint{
-					Time:  currentTime,
-					Value: value,
-					Rate:  rate,
+			// 转换数据格式
+			for _, point := range intradayPoints {
+				s.intradayData[fundCode].Data = append(s.intradayData[fundCode].Data, model.IntradayPoint{
+					Time:  point.Time,
+					Value: point.NetValue,
+					Rate:  point.Growth,
 				})
 			}
 
 			s.dataMutex.Unlock()
 
-			log.Printf("✅ [%d/%d] %s (%s) 估值: %.4f, 涨跌: %.2f%%",
-				i+1, totalFunds, fundName, fundCode, value, rate)
+			latest := intradayPoints[len(intradayPoints)-1]
+			log.Printf("✅ [%d/%d] %s (%s) 最新: %.4f (%.2f%%), 共 %d 个数据点",
+				i+1, totalFunds, fundName, fundCode, latest.NetValue, latest.Growth, len(intradayPoints))
 			successCount++
 		}
 
