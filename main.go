@@ -22,10 +22,15 @@ func main() {
 	port := 8080
 	serverIP := "175.27.141.110"
 
-	// Prom
-	http.Handle("/metrics", promhttp.Handler())
-	http.ListenAndServe(":8081", nil)
-	log.Println("Prometheus started on :8081")
+	// Prom - 在 goroutine 中启动 metrics 服务器
+	go func() {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", promhttp.Handler())
+		log.Println("📊 Prometheus metrics 启动在 :8081")
+		if err := http.ListenAndServe(":8081", metricsMux); err != nil {
+			log.Fatalf("❌ Metrics 服务器启动失败: %v", err)
+		}
+	}()
 
 	// 初始化服务层
 	fundService := service.NewFundService()
